@@ -354,6 +354,9 @@ def build_email_table_html(result: dict) -> str:
         "font-family:Arial, sans-serif;"
         "font-size:13px;"
         "color:#000000;"
+        "width:520px;"
+        "max-width:520px;"
+        "table-layout:fixed;"
         "mso-table-lspace:0pt;"
         "mso-table-rspace:0pt;"
     )
@@ -394,10 +397,10 @@ def build_email_table_html(result: dict) -> str:
 
     html_rows = f"""
     <tr>
-        <th style="{th_style}">{programa}</th>
-        <th style="{th_style}">Ventas</th>
-        <th style="{th_style}">Promos</th>
-        <th style="{th_style}">Corte</th>
+        <th style="{th_style}width:250px;">{programa}</th>
+        <th style="{th_style}width:90px;">Ventas</th>
+        <th style="{th_style}width:90px;">Promos</th>
+        <th style="{th_style}width:90px;">Corte</th>
     </tr>
     """
 
