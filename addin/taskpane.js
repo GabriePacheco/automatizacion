@@ -25,8 +25,25 @@ function getCurrentItem() {
   return Office.context.mailbox.item;
 }
 
-function getPdfAttachments(item) {
-  const attachments = item.attachments || [];
+function getAttachments(item) {
+  return new Promise((resolve, reject) => {
+    if (typeof item.getAttachmentsAsync === "function") {
+      item.getAttachmentsAsync(result => {
+        if (result.status === Office.AsyncResultStatus.Succeeded) {
+          resolve(result.value || []);
+        } else {
+          reject(new Error(result.error.message || "No se pudieron leer los adjuntos."));
+        }
+      });
+      return;
+    }
+
+    resolve(item.attachments || []);
+  });
+}
+
+async function getPdfAttachments(item) {
+  const attachments = await getAttachments(item);
 
   return attachments.filter(att => {
     const name = (att.name || "").toLowerCase();
@@ -79,7 +96,7 @@ async function processPdfAttachments() {
     setStatus("Buscando adjuntos PDF...");
 
     const item = getCurrentItem();
-    const pdfAttachments = getPdfAttachments(item);
+    const pdfAttachments = await getPdfAttachments(item);
 
     if (pdfAttachments.length === 0) {
       setStatus("No encontré PDFs adjuntos en este correo.", "error");
