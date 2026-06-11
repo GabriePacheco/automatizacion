@@ -352,43 +352,46 @@ def build_email_table_html(result: dict) -> str:
     table_style = (
         "border-collapse:collapse;"
         "font-family:Arial, sans-serif;"
-        "font-size:13px;"
+        "font-size:11pt;"
         "color:#000000;"
-        "width:520px;"
-        "max-width:520px;"
+        "width:486px;"
+        "max-width:486px;"
         "table-layout:fixed;"
         "mso-table-lspace:0pt;"
         "mso-table-rspace:0pt;"
     )
 
     th_style = (
-        "border:1px solid #555555;"
-        "padding:3px 6px;"
+        "border:1px solid #000000;"
+        "padding:2px 4px;"
         "font-weight:bold;"
         "text-align:center;"
         "vertical-align:middle;"
         "background-color:#ffffff;"
         "color:#000000;"
+        "line-height:16px;"
         "white-space:normal;"
     )
 
     td_label_style = (
-        "border:1px solid #555555;"
-        "padding:2px 6px;"
+        "border:1px solid #000000;"
+        "padding:1px 3px;"
         "text-align:left;"
         "vertical-align:middle;"
         "background-color:#ffffff;"
         "color:#000000;"
+        "line-height:16px;"
         "white-space:nowrap;"
     )
 
     td_time_style = (
-        "border:1px solid #555555;"
-        "padding:2px 6px;"
+        "border:1px solid #000000;"
+        "padding:1px 3px;"
         "text-align:right;"
         "vertical-align:middle;"
         "background-color:#ffffff;"
         "color:#000000;"
+        "line-height:16px;"
         "white-space:nowrap;"
     )
 
@@ -397,10 +400,10 @@ def build_email_table_html(result: dict) -> str:
 
     html_rows = f"""
     <tr>
-        <th style="{th_style}width:250px;">{programa}</th>
-        <th style="{th_style}width:90px;">Ventas</th>
-        <th style="{th_style}width:90px;">Promos</th>
-        <th style="{th_style}width:90px;">Corte</th>
+        <th style="{th_style}width:267px;">{programa}</th>
+        <th style="{th_style}width:62px;">Ventas</th>
+        <th style="{th_style}width:80px;">Promos</th>
+        <th style="{th_style}width:77px;">Corte</th>
     </tr>
     """
 
