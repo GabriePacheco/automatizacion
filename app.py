@@ -7,6 +7,7 @@ import html
 import traceback
 import base64
 from typing import List, Dict, Any, Optional
+from fastapi.staticfiles import StaticFiles
 
 
 app = FastAPI(
@@ -15,6 +16,8 @@ app = FastAPI(
     version="1.3.0",
 )
 
+
+app.mount("/addin", StaticFiles(directory="addin"), name="addin")
 
 # ============================================================
 # MODELOS

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Tiempos de Cortes</title>
+
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 14px;
+      color: #222;
+      background: #f7f7f7;
+    }
+
+    h1 {
+      font-size: 18px;
+      margin: 0 0 8px 0;
+    }
+
+    p {
+      font-size: 13px;
+      line-height: 1.4;
+      color: #555;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      margin: 6px 0;
+      border: none;
+      border-radius: 6px;
+      background: #222;
+      color: white;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      background: #999;
+      cursor: not-allowed;
+    }
+
+    .secondary {
+      background: #555;
+    }
+
+    .status {
+      margin-top: 10px;
+      padding: 8px;
+      background: #fff;
+      border-left: 4px solid #999;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+
+    .ok {
+      border-left-color: #178a35;
+    }
+
+    .error {
+      border-left-color: #c90000;
+      color: #900;
+    }
+
+    .preview {
+      margin-top: 14px;
+      padding: 10px;
+      background: white;
+      overflow-x: auto;
+      border: 1px solid #ddd;
+    }
+
+    .preview table {
+      margin-bottom: 16px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Tiempos de Cortes</h1>
+
+  <p>
+    Abre un correo con planes de transmisión en PDF y presiona el botón.
+    El sistema procesará los adjuntos PDF y mostrará las tablas listas para correo.
+  </p>
+
+  <button id="processBtn">Procesar PDFs adjuntos</button>
+  <button id="copyBtn" class="secondary" disabled>Copiar tablas HTML</button>
+
+  <div id="status" class="status">Listo.</div>
+
+  <div id="preview" class="preview"></div>
+
+  <script src="./taskpane.js"></script>
+</body>
+</html>
