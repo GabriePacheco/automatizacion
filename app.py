@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional
 app = FastAPI(
     title="API Planes de Transmisión",
     description="Procesa PDFs de planes de transmisión y devuelve tabla limpia de Ventas, Promos y Cortes.",
-    version="1.2.0",
+    version="1.3.0",
 )
 
 
@@ -119,19 +119,6 @@ def extract_header_info(text: str) -> Dict[str, str]:
 # ============================================================
 
 def find_block_markers(lines: List[str]) -> List[Dict[str, Any]]:
-    """
-    Detecta líneas tipo:
-
-    ESTA MAÑANA - BLOQUE 1 Corte : 4 min. 50 seg.
-    PARTIDO MUNDIAL 2026 - BLOQUE 3 Corte : 3 min. 32 COMENTARIO seg.
-
-    A veces PyMuPDF separa:
-    PREVIA MUNDIAL 2026 - BLOQUE 1 Corte : 3 min. 37
-    seg.
-
-    Por eso solo buscamos hasta el número de segundos.
-    """
-
     markers = []
 
     for idx, line in enumerate(lines):
@@ -177,14 +164,6 @@ def is_integer_line(line: str) -> bool:
 
 
 def is_time_line(line: str) -> bool:
-    """
-    Acepta:
-    NAC 09:55:13
-    GYE 11:43:02
-    UIO 11:43:02
-    ***** GYE 11:43:02
-    _____UIO 11:43:02
-    """
     line = line.strip()
     return re.search(r"\b(?:NAC|GYE|UIO)\s+\d{2}:\d{2}:\d{2}\b", line) is not None
 
@@ -327,7 +306,7 @@ def summarize_segment(lines: List[str]) -> Dict[str, Any]:
 
 
 # ============================================================
-# TABLA LIMPIA
+# FILAS Y TABLA LIMPIA
 # ============================================================
 
 def make_row(
@@ -357,6 +336,95 @@ def make_row(
         "declarado_pdf": declarado_text,
         "cuadra": cuadra,
     }
+
+
+def build_email_table_html(result: dict) -> str:
+    """
+    Tabla HTML pensada para correo Outlook / Power Automate.
+    Usa estilos en línea para que Outlook respete bordes, negritas y alineación.
+    """
+
+    programa = html.escape(str(result.get("programa", "")))
+
+    table_style = (
+        "border-collapse:collapse;"
+        "font-family:Arial, sans-serif;"
+        "font-size:13px;"
+        "color:#000000;"
+        "mso-table-lspace:0pt;"
+        "mso-table-rspace:0pt;"
+    )
+
+    th_style = (
+        "border:1px solid #555555;"
+        "padding:3px 6px;"
+        "font-weight:bold;"
+        "text-align:center;"
+        "vertical-align:middle;"
+        "background-color:#ffffff;"
+        "color:#000000;"
+        "white-space:normal;"
+    )
+
+    td_label_style = (
+        "border:1px solid #555555;"
+        "padding:2px 6px;"
+        "text-align:left;"
+        "vertical-align:middle;"
+        "background-color:#ffffff;"
+        "color:#000000;"
+        "white-space:nowrap;"
+    )
+
+    td_time_style = (
+        "border:1px solid #555555;"
+        "padding:2px 6px;"
+        "text-align:right;"
+        "vertical-align:middle;"
+        "background-color:#ffffff;"
+        "color:#000000;"
+        "white-space:nowrap;"
+    )
+
+    td_time_bold_style = td_time_style + "font-weight:bold;"
+    td_label_bold_style = td_label_style + "font-weight:bold;"
+
+    html_rows = f"""
+    <tr>
+        <th style="{th_style}">{programa}</th>
+        <th style="{th_style}">Ventas</th>
+        <th style="{th_style}">Promos</th>
+        <th style="{th_style}">Corte</th>
+    </tr>
+    """
+
+    for row in result.get("tabla", []):
+        concepto = html.escape(str(row.get("concepto", "")))
+        ventas = html.escape(str(row.get("ventas", "")))
+        promos = html.escape(str(row.get("promos", "")))
+        corte = html.escape(str(row.get("corte", "")))
+
+        if concepto.lower() == "totales":
+            label_style = td_label_bold_style
+            ventas_style = td_time_bold_style
+            promos_style = td_time_bold_style
+            corte_style = td_time_bold_style
+        else:
+            label_style = td_label_style
+            ventas_style = td_time_style
+            promos_style = td_time_style
+            corte_style = td_time_bold_style
+
+        html_rows += f"""
+        <tr>
+            <td style="{label_style}">{concepto}</td>
+            <td style="{ventas_style}">{ventas}</td>
+            <td style="{promos_style}">{promos}</td>
+            <td style="{corte_style}">{corte}</td>
+        </tr>
+        """
+
+    return f'<table style="{table_style}" cellpadding="0" cellspacing="0">{html_rows}</table>'
 
 
 def build_clean_table(text: str) -> Dict[str, Any]:
@@ -472,7 +540,7 @@ def build_clean_table(text: str) -> Dict[str, Any]:
             "cuadra": row["cuadra"],
         })
 
-    return {
+    result = {
         "programa": header.get("programa", ""),
         "fecha": header.get("fecha", ""),
         "horario": header.get("horario", ""),
@@ -481,9 +549,13 @@ def build_clean_table(text: str) -> Dict[str, Any]:
         "advertencias": warnings,
     }
 
+    result["html_table"] = build_email_table_html(result)
+
+    return result
+
 
 # ============================================================
-# HTML
+# HTML PARA VISTA WEB
 # ============================================================
 
 def result_to_html(result: dict) -> str:
@@ -798,6 +870,7 @@ def home():
             <div class="links">
                 Endpoint JSON archivo normal: <code>POST /procesar-plan</code><br>
                 Endpoint JSON Power Automate: <code>POST /procesar-plan-base64</code><br>
+                El JSON ahora incluye: <code>html_table</code><br>
                 Ver texto crudo del PDF: <code>POST /debug-texto</code><br>
                 Estado API: <a href="/health">/health</a><br>
                 Documentación técnica: <a href="/docs">/docs</a>
@@ -813,7 +886,7 @@ def health():
     return {
         "status": "ok",
         "message": "API activa",
-        "version": "1.2.0"
+        "version": "1.3.0"
     }
 
 
@@ -821,7 +894,7 @@ def health():
 async def procesar_plan(file: UploadFile = File(...)):
     """
     Endpoint para pruebas manuales o integraciones con multipart/form-data.
-    Devuelve JSON.
+    Devuelve JSON, incluyendo html_table.
     """
 
     if not file.filename.lower().endswith(".pdf"):
@@ -845,6 +918,8 @@ async def procesar_plan_base64(payload: PDFBase64Request):
       "filename": "archivo.pdf",
       "content_base64": "JVBERi0x..."
     }
+
+    Devuelve JSON, incluyendo html_table.
     """
 
     try:
@@ -879,7 +954,7 @@ async def procesar_plan_base64(payload: PDFBase64Request):
 async def procesar_plan_tabla(file: UploadFile = File(...)):
     """
     Endpoint visual.
-    Devuelve HTML con tabla.
+    Devuelve HTML con tabla para revisar en navegador.
     """
 
     try:
