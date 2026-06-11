@@ -182,6 +182,19 @@ async function copyHtmlTables() {
     ${finalHtmlTables}
   `;
 
+  const item = getCurrentItem();
+
+  if (item.body && typeof item.body.setSelectedDataAsync === "function") {
+    try {
+      await insertHtmlInMessageBody(item, emailHtml);
+      setStatus("Tablas insertadas en el correo.", "ok");
+      return;
+    } catch (err) {
+      setStatus("No pude insertar las tablas en el correo: " + err.message, "error");
+      return;
+    }
+  }
+
   try {
     if (navigator.clipboard && window.ClipboardItem) {
       const blobHtml = new Blob([emailHtml], { type: "text/html" });
@@ -202,6 +215,22 @@ async function copyHtmlTables() {
   } catch (err) {
     setStatus("No pude copiar automáticamente. Selecciona la tabla en la vista previa y cópiala manualmente.", "error");
   }
+}
+
+function insertHtmlInMessageBody(item, html) {
+  return new Promise((resolve, reject) => {
+    item.body.setSelectedDataAsync(
+      html,
+      { coercionType: Office.CoercionType.Html },
+      result => {
+        if (result.status === Office.AsyncResultStatus.Succeeded) {
+          resolve();
+        } else {
+          reject(new Error(result.error.message || "Outlook rechazo la insercion."));
+        }
+      }
+    );
+  });
 }
 
 function stripHtml(html) {
