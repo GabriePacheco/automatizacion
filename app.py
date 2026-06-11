@@ -1,17 +1,28 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
+from pydantic import BaseModel
 import fitz  # PyMuPDF
 import re
 import html
 import traceback
+import base64
 from typing import List, Dict, Any, Optional
 
 
 app = FastAPI(
     title="API Planes de Transmisión",
     description="Procesa PDFs de planes de transmisión y devuelve tabla limpia de Ventas, Promos y Cortes.",
-    version="1.1.0",
+    version="1.2.0",
 )
+
+
+# ============================================================
+# MODELOS
+# ============================================================
+
+class PDFBase64Request(BaseModel):
+    filename: str
+    content_base64: str
 
 
 # ============================================================
@@ -202,7 +213,6 @@ def extract_piece_inline(line: str) -> Optional[Dict[str, Any]]:
 
     piece_type = type_match.group(1)
 
-    # Duración normal: min seg
     number_pairs = re.findall(r"\b(\d+)\s+(\d+)\b", line)
 
     if not number_pairs:
@@ -759,6 +769,7 @@ def home():
             .links {
                 margin-top: 24px;
                 font-size: 14px;
+                line-height: 1.6;
             }
 
             .links a {
@@ -785,8 +796,10 @@ def home():
             </form>
 
             <div class="links">
-                Endpoint JSON para Power Automate: <code>POST /procesar-plan</code><br>
+                Endpoint JSON archivo normal: <code>POST /procesar-plan</code><br>
+                Endpoint JSON Power Automate: <code>POST /procesar-plan-base64</code><br>
                 Ver texto crudo del PDF: <code>POST /debug-texto</code><br>
+                Estado API: <a href="/health">/health</a><br>
                 Documentación técnica: <a href="/docs">/docs</a>
             </div>
         </div>
@@ -795,10 +808,19 @@ def home():
     """
 
 
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "message": "API activa",
+        "version": "1.2.0"
+    }
+
+
 @app.post("/procesar-plan")
 async def procesar_plan(file: UploadFile = File(...)):
     """
-    Endpoint para Power Automate.
+    Endpoint para pruebas manuales o integraciones con multipart/form-data.
     Devuelve JSON.
     """
 
@@ -810,6 +832,47 @@ async def procesar_plan(file: UploadFile = File(...)):
     result = build_clean_table(text)
 
     return result
+
+
+@app.post("/procesar-plan-base64")
+async def procesar_plan_base64(payload: PDFBase64Request):
+    """
+    Endpoint recomendado para Power Automate.
+    Recibe el PDF como base64 dentro de JSON.
+
+    Body esperado:
+    {
+      "filename": "archivo.pdf",
+      "content_base64": "JVBERi0x..."
+    }
+    """
+
+    try:
+        if not payload.filename.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="Solo se aceptan archivos PDF.")
+
+        content = payload.content_base64.strip()
+
+        # Por si algún sistema envía formato tipo:
+        # data:application/pdf;base64,JVBERi0x...
+        if "," in content and "base64" in content[:100].lower():
+            content = content.split(",", 1)[1]
+
+        pdf_bytes = base64.b64decode(content)
+
+        text = extract_text_from_pdf(pdf_bytes)
+        result = build_clean_table(text)
+
+        return result
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error procesando PDF base64: {str(e)}"
+        )
 
 
 @app.post("/procesar-plan-tabla", response_class=HTMLResponse)
