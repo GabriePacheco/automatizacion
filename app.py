@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 app = FastAPI(
     title="API Planes de Transmisión",
     description="Procesa PDFs de planes de transmisión y devuelve tabla limpia de Ventas, Promos y Cortes.",
-    version="1.3.0",
+    version="1.4.0",
 )
 
 
@@ -121,41 +121,115 @@ def extract_header_info(text: str) -> Dict[str, str]:
 # BLOQUES
 # ============================================================
 
+BLOCK_LOOKAHEAD_LINES = 4
+
+
+def normalize_spaces(value: str) -> str:
+    return " ".join(str(value or "").split())
+
+
+def marker_debug(markers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "block_number": marker["block_number"],
+            "declared_seconds": marker["declared_seconds"],
+            "raw_line": marker["raw_line"],
+            "index": marker["index"],
+        }
+        for marker in markers
+    ]
+
+
+def parser_http_error(message: str, markers: Optional[List[Dict[str, Any]]] = None) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={
+            "message": message,
+            "debug_bloques": marker_debug(markers or []),
+        },
+    )
+
+
 def find_block_markers(lines: List[str]) -> List[Dict[str, Any]]:
+    """
+    Detecta encabezados de bloque aunque PyMuPDF parta el texto en varias lineas.
+    Se mira la linea actual mas cuatro lineas siguientes para capturar duraciones
+    separadas como "4" / "min. 29 seg." o "4 min." / "29 seg.".
+    """
     markers = []
 
     for idx, line in enumerate(lines):
-        normalized = " ".join(line.split())
+        normalized = normalize_spaces(line)
 
-        if "BLOQUE" not in normalized.upper():
+        if "BLOQUE" not in normalized.upper() or "CORTE" not in normalized.upper():
             continue
 
-        if "CORTE" not in normalized.upper():
+        window_lines = [line]
+
+        for next_line in lines[idx + 1:idx + BLOCK_LOOKAHEAD_LINES + 1]:
+            normalized_next = normalize_spaces(next_line).upper()
+
+            if "BLOQUE" in normalized_next and "CORTE" in normalized_next:
+                break
+
+            window_lines.append(next_line)
+
+        raw_window = " | ".join(item.strip() for item in window_lines if item.strip())
+        normalized_window = normalize_spaces(" ".join(window_lines))
+
+        block_match = re.search(r"\bBLOQUE\s+(\d+)\b", normalized_window, re.I)
+        corte_match = re.search(r"\bCorte\s*:", normalized_window, re.I)
+
+        if not block_match or not corte_match:
             continue
 
-        block_match = re.search(r"BLOQUE\s+(\d+)", normalized, re.I)
-
-        corte_match = re.search(
-            r"Corte\s*:\s*(\d+)\s*min\.?\s*(\d+)",
-            normalized,
+        after_corte = normalized_window[corte_match.end():]
+        duration_match = re.search(
+            r"\b(\d+)\s*min\.?\s*(\d+)\s*seg\.?",
+            after_corte,
             re.I,
         )
 
-        if block_match and corte_match:
-            block_number = int(block_match.group(1))
-            declared_seconds = to_seconds(
-                int(corte_match.group(1)),
-                int(corte_match.group(2)),
-            )
+        if not duration_match:
+            continue
 
-            markers.append({
-                "index": idx,
-                "block_number": block_number,
-                "declared_seconds": declared_seconds,
-                "raw_line": line,
-            })
+        markers.append({
+            "index": idx,
+            "block_number": int(block_match.group(1)),
+            "declared_seconds": to_seconds(
+                int(duration_match.group(1)),
+                int(duration_match.group(2)),
+            ),
+            "raw_line": raw_window,
+        })
 
     return markers
+
+
+def validate_block_markers(markers: List[Dict[str, Any]]) -> None:
+    if not markers:
+        raise parser_http_error(
+            "No se encontraron bloques con formato reconocible 'BLOQUE X Corte : ... min. ... seg.'.",
+            markers,
+        )
+
+    first_block = markers[0]["block_number"]
+
+    if first_block != 1:
+        raise parser_http_error(
+            f"El primer bloque detectado es BLOQUE {first_block}; se esperaba BLOQUE 1.",
+            markers,
+        )
+
+    detected = [marker["block_number"] for marker in markers]
+    expected = list(range(1, len(detected) + 1))
+
+    if detected != expected:
+        raise parser_http_error(
+            "Hay saltos o desorden en la numeracion de bloques. "
+            f"Detectados: {detected}. Esperados: {expected}.",
+            markers,
+        )
 
 
 # ============================================================
@@ -168,7 +242,7 @@ def is_integer_line(line: str) -> bool:
 
 def is_time_line(line: str) -> bool:
     line = line.strip()
-    return re.search(r"\b(?:NAC|GYE|UIO)\s+\d{2}:\d{2}:\d{2}\b", line) is not None
+    return re.search(r"\b\d{2}:\d{2}:\d{2}\b", line) is not None
 
 
 def extract_piece_inline(line: str) -> Optional[Dict[str, Any]]:
@@ -185,17 +259,21 @@ def extract_piece_inline(line: str) -> Optional[Dict[str, Any]]:
     if "BLOQUE" in upper_line and "CORTE" in upper_line:
         return None
 
+    normalized = normalize_spaces(line)
+
     type_match = re.search(
-        r"\b(?:NAC|GYE|UIO)?\s*\d{2}:\d{2}:\d{2}\s+([CP])\b",
-        line,
+        r"\b\d{2}:\d{2}:\d{2}\s+([CP])\b(?P<tail>.*)$",
+        normalized,
+        re.I,
     )
 
     if not type_match:
         return None
 
-    piece_type = type_match.group(1)
+    piece_type = type_match.group(1).upper()
+    tail = type_match.group("tail") or ""
 
-    number_pairs = re.findall(r"\b(\d+)\s+(\d+)\b", line)
+    number_pairs = re.findall(r"\b(\d+)\s+(\d+)\b", tail)
 
     if not number_pairs:
         return None
@@ -206,7 +284,7 @@ def extract_piece_inline(line: str) -> Optional[Dict[str, Any]]:
     return {
         "type": piece_type,
         "seconds": duration_seconds,
-        "raw_line": line,
+        "raw_line": normalized,
     }
 
 
@@ -261,6 +339,26 @@ def summarize_segment(lines: List[str]) -> Dict[str, Any]:
 
             i += 1
             continue
+
+        # -------------------------------
+        # Caso 1b: pieza partida en varias lineas.
+        # Ejemplo:
+        # NAC 23:50:18 C
+        # 0 30
+        # -------------------------------
+        if is_time_line(line) and re.search(r"\b[CP]\b", line):
+            combined_lines = lines[i:i + 3]
+            combined_piece = extract_piece_inline(" ".join(combined_lines))
+
+            if combined_piece and combined_piece["seconds"] > 0:
+                if combined_piece["type"] == "C":
+                    ventas += combined_piece["seconds"]
+                elif combined_piece["type"] == "P":
+                    promos += combined_piece["seconds"]
+
+                pieces.append(combined_piece)
+                i += len(combined_lines)
+                continue
 
         # -------------------------------
         # Caso 2: columnas separadas
@@ -324,9 +422,11 @@ def make_row(
     if declarado_seconds is None:
         declarado_text = ""
         cuadra = True
+        difference_seconds = 0
     else:
-        declarado_text = seconds_to_hms(declarado_seconds) if declarado_seconds > 0 else ""
-        cuadra = total_seconds == declarado_seconds if declarado_seconds > 0 else True
+        declarado_text = seconds_to_hms(declarado_seconds)
+        difference_seconds = total_seconds - declarado_seconds
+        cuadra = difference_seconds == 0
 
     return {
         "concepto": concepto,
@@ -338,6 +438,7 @@ def make_row(
         "total_seconds": total_seconds,
         "declarado_pdf": declarado_text,
         "cuadra": cuadra,
+        "difference_seconds": difference_seconds,
     }
 
 
@@ -352,46 +453,40 @@ def build_email_table_html(result: dict) -> str:
     table_style = (
         "border-collapse:collapse;"
         "font-family:Arial, sans-serif;"
-        "font-size:11pt;"
+        "font-size:13px;"
         "color:#000000;"
-        "width:486px;"
-        "max-width:486px;"
-        "table-layout:fixed;"
         "mso-table-lspace:0pt;"
         "mso-table-rspace:0pt;"
     )
 
     th_style = (
-        "border:1px solid #000000;"
-        "padding:2px 4px;"
+        "border:1px solid #555;"
+        "padding:6px 10px;"
         "font-weight:bold;"
         "text-align:center;"
         "vertical-align:middle;"
         "background-color:#ffffff;"
         "color:#000000;"
-        "line-height:16px;"
         "white-space:normal;"
     )
 
     td_label_style = (
-        "border:1px solid #000000;"
-        "padding:1px 3px;"
+        "border:1px solid #555;"
+        "padding:6px 10px;"
         "text-align:left;"
         "vertical-align:middle;"
         "background-color:#ffffff;"
         "color:#000000;"
-        "line-height:16px;"
         "white-space:nowrap;"
     )
 
     td_time_style = (
-        "border:1px solid #000000;"
-        "padding:1px 3px;"
+        "border:1px solid #555;"
+        "padding:6px 10px;"
         "text-align:right;"
         "vertical-align:middle;"
         "background-color:#ffffff;"
         "color:#000000;"
-        "line-height:16px;"
         "white-space:nowrap;"
     )
 
@@ -400,10 +495,10 @@ def build_email_table_html(result: dict) -> str:
 
     html_rows = f"""
     <tr>
-        <th style="{th_style}width:267px;">{programa}</th>
-        <th style="{th_style}width:62px;">Ventas</th>
-        <th style="{th_style}width:80px;">Promos</th>
-        <th style="{th_style}width:77px;">Corte</th>
+        <th style="{th_style}">{programa}</th>
+        <th style="{th_style}">Ventas</th>
+        <th style="{th_style}">Promos</th>
+        <th style="{th_style}">Corte</th>
     </tr>
     """
 
@@ -440,12 +535,7 @@ def build_clean_table(text: str) -> Dict[str, Any]:
     raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
     header = extract_header_info(text)
     markers = find_block_markers(raw_lines)
-
-    if not markers:
-        raise HTTPException(
-            status_code=422,
-            detail="No se encontraron bloques con formato 'BLOQUE X Corte : ...'.",
-        )
+    validate_block_markers(markers)
 
     rows = []
 
@@ -533,8 +623,16 @@ def build_clean_table(text: str) -> Dict[str, Any]:
             continue
 
         if row["declarado_pdf"] and not row["cuadra"]:
+            difference = int(row.get("difference_seconds", 0))
+            abs_difference = abs(difference)
+            severity = (
+                "Diferencia mayor a 1 segundo"
+                if abs_difference > 1
+                else "Diferencia de 1 segundo, posible redondeo o extraccion"
+            )
             warnings.append(
-                f"{row['concepto']} no cuadra: PDF declara {row['declarado_pdf']} pero la suma da {row['corte']}."
+                f"{row['concepto']} no cuadra: PDF declara {row['declarado_pdf']} "
+                f"pero la suma da {row['corte']} ({severity}; diferencia {difference:+d}s)."
             )
 
     clean_rows = []
@@ -556,6 +654,7 @@ def build_clean_table(text: str) -> Dict[str, Any]:
         "estado": header.get("estado", ""),
         "tabla": clean_rows,
         "advertencias": warnings,
+        "debug_bloques": marker_debug(markers),
     }
 
     result["html_table"] = build_email_table_html(result)
@@ -791,6 +890,79 @@ def error_to_html(error_message: str, detail: str = "") -> str:
 
 
 # ============================================================
+# PRUEBAS INTERNAS DEL PARSER
+# ============================================================
+
+def run_parser_self_tests() -> None:
+    block_cases = [
+        (
+            ["NAC 09:30:00 ESTA MANANA - BLOQUE 1 Corte : 4 min. 50 seg. 24 43"],
+            1,
+            290,
+        ),
+        (
+            ["PREVIA MUNDIAL 2026 DIFERIDO - BLOQUE 1 Corte : 4", "min. 29 seg."],
+            1,
+            269,
+        ),
+        (
+            ["NUESTRO MUNDIAL AL DIA - BLOQUE 1 Corte : 4 min.", "27 seg."],
+            1,
+            267,
+        ),
+        (
+            ["PARTIDO MUNDIAL 2026 DIFERIDO - BLOQUE 1 Corte : PRESENTACIN", "2 min. 47 seg."],
+            1,
+            167,
+        ),
+        (
+            ["PARTIDO MUNDIAL 2026 DIFERIDO - BLOQUE 6 Corte : DESPEDIDA", "0 min. 30 seg."],
+            6,
+            30,
+        ),
+        (
+            ["NUESTRO MUNDIAL AL DIA - BLOQUE 5 Corte : 0 min. 0", "seg."],
+            5,
+            0,
+        ),
+    ]
+
+    for lines, expected_block, expected_seconds in block_cases:
+        markers = find_block_markers(lines)
+        assert len(markers) == 1, lines
+        assert markers[0]["block_number"] == expected_block, lines
+        assert markers[0]["declared_seconds"] == expected_seconds, lines
+
+    piece_lines = [
+        "NAC 22:10:54 C TEST 0 5",
+        "_____UIO 22:20:28 C TEST 0 15",
+        "***** GYE 11:43:02 P TEST 0 20",
+        "DIGITAL adi NAC 22:14:14 C TEST 0 15",
+        "DIGITAL ADIC NAC 15:46:20 C TEST 0 31",
+        "P1700-PAPA-VISA-MUNDIAL-BPICHINCHA DIGITAL -99076",
+        '(30")',
+        "NAC 23:50:18 C 0 30",
+        "NAC 00:00:00 C 0 0",
+    ]
+    summary = summarize_segment(piece_lines)
+    assert summary["ventas_seconds"] == 96, summary
+    assert summary["promos_seconds"] == 20, summary
+
+    despedida_text = "\n".join([
+        "NAC 08:00:00 C PRESENTA 0 30",
+        "PROGRAMA - BLOQUE 1 Corte : 2 min. 47 seg.",
+        "NAC 08:10:00 C VENTA 2 17",
+        "NAC 08:12:00 P PROMO 0 30",
+        "PROGRAMA - BLOQUE 2 Corte : DESPEDIDA",
+        "0 min. 30 seg.",
+        "NAC 08:20:00 C DESPIDE 0 30",
+    ])
+    result = build_clean_table(despedida_text)
+    conceptos = [row["concepto"] for row in result["tabla"]]
+    assert conceptos == ["PRESENTA", "Corte 1", "DESPIDE", "Totales"], conceptos
+
+
+# ============================================================
 # ENDPOINTS
 # ============================================================
 
@@ -895,7 +1067,7 @@ def health():
     return {
         "status": "ok",
         "message": "API activa",
-        "version": "1.3.0"
+        "version": "1.4.0"
     }
 
 
@@ -1005,5 +1177,18 @@ async def debug_texto(file: UploadFile = File(...)):
 
     pdf_bytes = await file.read()
     text = extract_text_from_pdf(pdf_bytes)
+    raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    markers = find_block_markers(raw_lines)
+    debug_lines = [
+        "",
+        "",
+        "================ DEBUG_BLOQUES ================",
+    ]
 
-    return text
+    for marker in marker_debug(markers):
+        debug_lines.append(
+            f"index={marker['index']} block_number={marker['block_number']} "
+            f"declared_seconds={marker['declared_seconds']} raw_line={marker['raw_line']}"
+        )
+
+    return text + "\n".join(debug_lines)
