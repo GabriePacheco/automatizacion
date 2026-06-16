@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 app = FastAPI(
     title="API Planes de Transmisión",
     description="Procesa PDFs de planes de transmisión y devuelve tabla limpia de Ventas, Promos y Cortes.",
-    version="1.4.0",
+    version="1.5.0",
 )
 
 
@@ -42,6 +42,26 @@ def seconds_to_hms(total_seconds: int) -> str:
     m = (total_seconds % 3600) // 60
     s = total_seconds % 60
     return f"{h}:{m:02d}:{s:02d}"
+
+
+def hms_to_seconds(value: str) -> int:
+    match = re.fullmatch(r"(\d{2}):(\d{2}):(\d{2})", str(value or "").strip())
+
+    if not match:
+        raise ValueError(f"Hora invalida: {value}")
+
+    hours, minutes, seconds = [int(part) for part in match.groups()]
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def duration_between_hms(start_hms: str, end_hms: str) -> int:
+    start = hms_to_seconds(start_hms)
+    end = hms_to_seconds(end_hms)
+
+    if end < start:
+        end += 24 * 3600
+
+    return end - start
 
 
 # ============================================================
@@ -79,6 +99,8 @@ def extract_header_info(text: str) -> Dict[str, str]:
 
     fecha = ""
     horario = ""
+    hora_inicio = ""
+    hora_fin = ""
     programa = ""
     estado = ""
 
@@ -97,7 +119,9 @@ def extract_header_info(text: str) -> Dict[str, str]:
         )
 
         if match:
-            horario = f"{match.group(1)} a {match.group(2)}"
+            hora_inicio = match.group(1)
+            hora_fin = match.group(2)
+            horario = f"{hora_inicio} a {hora_fin}"
             programa = match.group(3).strip()
 
     estado_match = re.search(
@@ -112,6 +136,8 @@ def extract_header_info(text: str) -> Dict[str, str]:
     return {
         "fecha": fecha,
         "horario": horario,
+        "hora_inicio": hora_inicio,
+        "hora_fin": hora_fin,
         "programa": programa,
         "estado": estado,
     }
@@ -442,6 +468,44 @@ def make_row(
     }
 
 
+def calculate_content_seconds(header: Dict[str, str], total_cuts_seconds: int) -> Dict[str, Any]:
+    start_hms = header.get("hora_inicio", "")
+    end_hms = header.get("hora_fin", "")
+
+    if not start_hms or not end_hms:
+        return {
+            "seconds": None,
+            "warning": "No se pudo calcular Contenido porque no se encontro hora de inicio y fin del programa.",
+        }
+
+    try:
+        program_seconds = duration_between_hms(start_hms, end_hms)
+    except ValueError as exc:
+        return {
+            "seconds": None,
+            "warning": f"No se pudo calcular Contenido: {str(exc)}.",
+        }
+
+    content_seconds = program_seconds - int(total_cuts_seconds or 0)
+
+    if content_seconds < 0:
+        return {
+            "seconds": None,
+            "program_seconds": program_seconds,
+            "warning": (
+                "No se pudo calcular Contenido: el tiempo de cortes "
+                f"({seconds_to_hms(total_cuts_seconds)}) supera la duracion del programa "
+                f"({seconds_to_hms(program_seconds)})."
+            ),
+        }
+
+    return {
+        "seconds": content_seconds,
+        "program_seconds": program_seconds,
+        "warning": "",
+    }
+
+
 def build_email_table_html(result: dict) -> str:
     """
     Tabla HTML pensada para correo Outlook / Power Automate.
@@ -508,7 +572,7 @@ def build_email_table_html(result: dict) -> str:
         promos = html.escape(str(row.get("promos", "")))
         corte = html.escape(str(row.get("corte", "")))
 
-        if concepto.lower() == "totales":
+        if concepto.lower() in ("totales", "contenido"):
             label_style = td_label_bold_style
             ventas_style = td_time_bold_style
             promos_style = td_time_bold_style
@@ -612,14 +676,34 @@ def build_clean_table(text: str) -> Dict[str, Any]:
         "cuadra": True,
     })
 
+    content_info = calculate_content_seconds(header, total_general)
+    contenido_seconds = content_info.get("seconds")
+
+    if contenido_seconds is not None:
+        rows.append({
+            "concepto": "Contenido",
+            "ventas": "",
+            "promos": "",
+            "corte": seconds_to_hms(contenido_seconds),
+            "ventas_seconds": 0,
+            "promos_seconds": 0,
+            "total_seconds": int(contenido_seconds),
+            "declarado_pdf": "",
+            "cuadra": True,
+            "difference_seconds": 0,
+        })
+
     # ------------------------------------------------------------
     # ADVERTENCIAS
     # ------------------------------------------------------------
 
     warnings = []
 
+    if content_info.get("warning"):
+        warnings.append(content_info["warning"])
+
     for row in rows:
-        if row["concepto"] == "Totales":
+        if row["concepto"] in ("Totales", "Contenido"):
             continue
 
         if row["declarado_pdf"] and not row["cuadra"]:
@@ -652,6 +736,13 @@ def build_clean_table(text: str) -> Dict[str, Any]:
         "fecha": header.get("fecha", ""),
         "horario": header.get("horario", ""),
         "estado": header.get("estado", ""),
+        "duracion_programa": (
+            seconds_to_hms(content_info["program_seconds"])
+            if content_info.get("program_seconds") is not None
+            else ""
+        ),
+        "contenido": seconds_to_hms(contenido_seconds) if contenido_seconds is not None else "",
+        "contenido_seconds": contenido_seconds,
         "tabla": clean_rows,
         "advertencias": warnings,
         "debug_bloques": marker_debug(markers),
@@ -677,7 +768,7 @@ def result_to_html(result: dict) -> str:
         declarado = html.escape(str(row.get("declarado_pdf", "")))
         cuadra = bool(row.get("cuadra", True))
 
-        if concepto.lower() == "totales":
+        if concepto.lower() in ("totales", "contenido"):
             row_class = "total"
         elif not cuadra:
             row_class = "error"
@@ -961,6 +1052,21 @@ def run_parser_self_tests() -> None:
     conceptos = [row["concepto"] for row in result["tabla"]]
     assert conceptos == ["PRESENTA", "Corte 1", "DESPIDE", "Totales"], conceptos
 
+    contenido_text = "\n".join([
+        "De: 10:00:00 a 11:00:00 PROGRAMA TEST",
+        "NAC 10:00:00 C PRESENTA 0 30",
+        "PROGRAMA TEST - BLOQUE 1 Corte : 1 min. 0 seg.",
+        "NAC 10:10:00 C VENTA 1 0",
+        "PROGRAMA TEST - BLOQUE 2 Corte : DESPEDIDA",
+        "0 min. 30 seg.",
+        "NAC 10:50:00 C DESPIDE 0 30",
+    ])
+    result = build_clean_table(contenido_text)
+    conceptos = [row["concepto"] for row in result["tabla"]]
+    assert conceptos == ["PRESENTA", "Corte 1", "DESPIDE", "Totales", "Contenido"], conceptos
+    assert result["duracion_programa"] == "1:00:00", result
+    assert result["contenido"] == "0:58:00", result
+
 
 # ============================================================
 # ENDPOINTS
@@ -1067,7 +1173,7 @@ def health():
     return {
         "status": "ok",
         "message": "API activa",
-        "version": "1.4.0"
+        "version": "1.5.0"
     }
 
 
