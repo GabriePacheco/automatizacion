@@ -595,6 +595,40 @@ def build_email_table_html(result: dict) -> str:
     return f'<table style="{table_style}" cellpadding="0" cellspacing="0">{html_rows}</table>'
 
 
+def build_email_result_html(result: dict) -> str:
+    programa = html.escape(str(result.get("programa", "")))
+    fecha = html.escape(str(result.get("fecha", "")))
+    horario = html.escape(str(result.get("horario", "")))
+    table_html = result.get("html_table") or build_email_table_html(result)
+
+    title_style = (
+        "font-family:Arial, sans-serif;"
+        "font-size:18px;"
+        "font-weight:bold;"
+        "line-height:22px;"
+        "color:#000000;"
+        "margin:0 0 6px 0;"
+    )
+    info_style = (
+        "font-family:Arial, sans-serif;"
+        "font-size:13px;"
+        "line-height:18px;"
+        "color:#222222;"
+        "margin:0 0 14px 0;"
+    )
+
+    return f"""
+    <div style="font-family:Arial, sans-serif;color:#000000;">
+        <div style="{title_style}">{programa}</div>
+        <div style="{info_style}">
+            <div><strong>Fecha:</strong> {fecha}</div>
+            <div><strong>Horario:</strong> {horario}</div>
+        </div>
+        {table_html}
+    </div>
+    """
+
+
 def build_clean_table(text: str) -> Dict[str, Any]:
     raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
     header = extract_header_info(text)
@@ -749,6 +783,7 @@ def build_clean_table(text: str) -> Dict[str, Any]:
     }
 
     result["html_table"] = build_email_table_html(result)
+    result["html_email"] = build_email_result_html(result)
 
     return result
 

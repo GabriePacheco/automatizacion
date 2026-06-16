@@ -131,10 +131,10 @@ async function processPdfAttachments() {
         */
         const result = await sendPdfToApi(attachment.name, content.content);
 
-        if (result.html_table) {
-          tables.push(result.html_table);
+        if (result.html_email || result.html_table) {
+          tables.push(result.html_email || result.html_table);
         } else {
-          errors.push(`${attachment.name}: la API respondió sin html_table.`);
+          errors.push(`${attachment.name}: la API no devolvio html_email ni html_table.`);
         }
 
         if (result.advertencias && result.advertencias.length > 0) {
